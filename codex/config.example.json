@@ -1,0 +1,23 @@
+{
+  "provider": "codex",
+  "name": "codex-wrap",
+  "version": "0.1.0",
+  "base_url": "https://api.openai.com/v1/chat/completions",
+  "env_var": "OPENAI_API_KEY",
+  "op_ref": "",
+  "models": [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o1",
+    "o1-mini",
+    "o3",
+    "o3-mini",
+    "o4-mini",
+    "codex-mini",
+    "gpt-5.4",
+    "gpt-5.4-mini"
+  ],
+  "default_model": "gpt-4o",
+  "cli_target": "codex",
+  "roles": {}
+}

@@ -1,0 +1,19 @@
+{
+  "provider": "kimi",
+  "name": "kimi-wrap",
+  "version": "0.1.0",
+  "base_url": "https://api.moonshot.ai/v1/chat/completions",
+  "env_var": "MOONSHOT_API_KEY",
+  "op_ref": "",
+  "models": [
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "moonshot-v1-auto"
+  ],
+  "default_model": "kimi-k3",
+  "cli_target": "",
+  "roles": {}
+}

@@ -1,0 +1,17 @@
+{
+  "provider": "gemini",
+  "name": "gemini-wrap",
+  "version": "0.1.0",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+  "env_var": "GEMINI_API_KEY",
+  "op_ref": "",
+  "models": [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash-image"
+  ],
+  "default_model": "gemini-2.5-pro",
+  "cli_target": "",
+  "roles": {}
+}
