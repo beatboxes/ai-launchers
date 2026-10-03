@@ -609,7 +609,7 @@ class Gateway(object):
         self._stopping.clear()
         httpd = _HTTPServer((self.host, self._port), _Handler, self)
         self._httpd = httpd
-        self._thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2},
+        self._thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05},
                                         name="ai-gateway-http", daemon=True)
         self._thread.start()
         self.log.info("gateway listening on %s (%d providers)", self.url, len(self.table.providers))
