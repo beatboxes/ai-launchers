@@ -126,6 +126,10 @@ class MapUpstreamErrorTests(unittest.TestCase):
         e = m(429, g)
         self.assertEqual((e.should_retry, e.retry_after), (True, 34.0))
         self.assertEqual(m(429, [g]).retry_after, 34.0)  # Gemini stream error arrays
+        # Gemini words every 429 as "You exceeded your current quota"; structured details decide.
+        g["error"]["message"] = "You exceeded your current quota, please check your plan and billing details."
+        e = m(429, g)
+        self.assertEqual((e.should_retry, e.retry_after), (True, 34.0))
 
     def test_429_terminal(self):
         resets = int(time.time()) + 3600

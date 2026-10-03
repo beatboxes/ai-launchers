@@ -338,6 +338,10 @@ def _classify_429(parsed, headers):
         return True, None, reset_epoch
     if g_delay is not None and g_delay > TERMINAL_RETRY_DELAY:
         return True, None, time.time() + g_delay
+    # Google says "You exceeded your current quota" even for per-minute limits; when the
+    # structured RetryInfo/QuotaFailure details are present they decide (not the billing text).
+    if g_delay is not None or any(str(d.get("@type", "")).endswith("QuotaFailure") for d in parsed.google_details):
+        return False, retry_after, None
     if _CREDITS_RE.search(msg) or _CREDITS_RE.search(codes):
         return True, None, reset_epoch
     if retry_after is not None and retry_after > TERMINAL_RETRY_DELAY * 12:  # > 1 h: give up
