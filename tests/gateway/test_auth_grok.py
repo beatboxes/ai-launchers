@@ -130,6 +130,24 @@ class GrokAuthTests(unittest.TestCase):
         self.assertIsNone(a.api_key_entry())
         self.assertEqual(a.describe()["hint"], "run `grok login`")
 
+    def test_availability_and_state_follow_expiry_and_refresh_token(self):
+        write_file(self.path, standard(self.srv.url, expires_in=3600))
+        self.assertTrue(self.auth().available())
+        self.assertEqual(self.auth().describe()["state"], "valid")
+        write_file(self.path, standard(self.srv.url, expires_in=-60))
+        a = self.auth()
+        self.assertTrue(a.available(), "an expired key is renewed with the refresh token")
+        self.assertEqual(a.describe()["state"], "expired (refreshed on first request)")
+        write_file(self.path, standard(self.srv.url, expires_in=-60, rt=None))
+        a = self.auth()
+        self.assertFalse(a.available(), "expired and nothing to renew it with: the transport is unusable")
+        d = a.describe()
+        self.assertEqual((d["available"], d["state"], d["hint"]), (False, "expired, no refresh token",
+                                                                    "run `grok login`"))
+        with self.assertRaises(auth_base.AuthError):
+            a.headers()
+        self.assertEqual(mock_auth.refresh_count(self.srv), 0)
+
     def test_paths(self):
         self.assertEqual(self.auth().auth_path(), self.path)
         a = grok.GrokCliAuth("grok", {}, environ={"GROK_AUTH_PATH": "/a/b.json", "GROK_HOME": "/c"})

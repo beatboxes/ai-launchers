@@ -135,6 +135,24 @@ class CodexAuthTests(unittest.TestCase):
         self.assertFalse(a.available())
         self.assertFalse(a.on_unauthorized({"Authorization": "Bearer x"}))
 
+    def test_availability_and_state_follow_expiry_and_refresh_token(self):
+        write_auth(self.path, exp_in=3600)
+        self.assertTrue(self.auth().available())
+        self.assertEqual(self.auth().describe()["state"], "valid")
+        write_auth(self.path, exp_in=-60)
+        a = self.auth()
+        self.assertTrue(a.available(), "an expired access token is renewed with the refresh token")
+        self.assertEqual(a.describe()["state"], "expired (refreshed on first request)")
+        write_auth(self.path, exp_in=-60, rt=None)
+        a = self.auth()
+        self.assertFalse(a.available(), "expired and nothing to renew it with: the transport is unusable")
+        d = a.describe()
+        self.assertEqual((d["available"], d["state"], d["hint"]), (False, "expired, no refresh token",
+                                                                    "run `codex login`"))
+        with self.assertRaises(auth_base.AuthError):
+            a.headers()
+        self.assertEqual(self.refreshes(), 0)
+
     # ---- refresh -----------------------------------------------------------------------
     def test_refresh_happy_path_write_back(self):
         old = write_auth(self.path, exp_in=-60)

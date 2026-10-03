@@ -225,11 +225,14 @@ class GrokCliAuth(LockedFileAuth):
     def describe(self):
         with self._lock:
             tok = self._safe_load()
-        d = {"kind": self.kind, "provider": self.provider_id, "available": tok is not None,
+        d = {"kind": self.kind, "provider": self.provider_id, "available": tok is not None and self._usable(tok),
              "source": "grok auth.json", "path": self.auth_path(), "api_key_entry": bool(self.api_key_entry())}
         if tok is not None:
             d["entry"] = tok.extra.get("entry")
             d["auth_mode"] = tok.extra.get("auth_mode")
+            d["state"] = self.token_state(tok)
+            if not d["available"]:
+                d["hint"] = self.cli_hint
             if tok.expires_at is not None:
                 d["expires_at"] = rfc3339_format(tok.expires_at, "seconds")
         else:

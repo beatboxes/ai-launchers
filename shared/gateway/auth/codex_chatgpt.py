@@ -17,6 +17,9 @@ Credentials: ``options["auth_path"]`` | ``$CODEX_HOME/auth.json`` | ``~/.codex/a
   ``tokens.{access_token,id_token,refresh_token}`` + ``last_refresh`` (RFC3339 Z) keeping unknown
   fields, atomic pretty write 0600. ``invalid_grant`` / ``refresh_token_reused`` / any 400/401 ->
   re-read; a rotated on-disk token is adopted, else terminal ``AuthError`` ("run `codex login`").
+* ``available()`` (no network) needs an unexpired access token or a refresh token to renew it;
+  ``describe()["state"]`` reports ``valid`` / ``expired (refreshed on first request)`` /
+  ``expired, no refresh token`` (same for ``grok_cli``).
 
 ``LockedFileAuth`` (also used by ``grok_cli``) holds that lock/re-read/adopt/refresh/merge/write
 skeleton; subclasses supply ``auth_path``, ``_parse``, ``_call_token_endpoint`` and ``_merge``.
@@ -213,6 +216,25 @@ class LockedFileAuth(RefreshingAuth):
         except AuthError:
             return None
 
+    # ---- availability ------------------------------------------------------------------
+    @staticmethod
+    def _usable(tok):
+        """An unexpired access token, or a refresh token to renew it (decided without network)."""
+        return bool(tok.extra.get("refresh_token")) or not tok.expires_within(0)
+
+    @staticmethod
+    def token_state(tok):
+        """``"valid"`` | ``"expired (refreshed on first request)"`` | ``"expired, no refresh token"``."""
+        if not tok.expires_within(0):
+            return "valid"
+        return "expired (refreshed on first request)" if tok.extra.get("refresh_token") else \
+            "expired, no refresh token"
+
+    def available(self):
+        with self._lock:
+            tok = self._safe_load()
+        return tok is not None and self._usable(tok)
+
 
 class CodexChatGPTAuth(LockedFileAuth):
     """``codex_chatgpt`` auth kind (see module docstring)."""
@@ -316,9 +338,12 @@ class CodexChatGPTAuth(LockedFileAuth):
     def describe(self):
         with self._lock:
             tok = self._safe_load()
-        d = {"kind": self.kind, "provider": self.provider_id, "available": tok is not None,
+        d = {"kind": self.kind, "provider": self.provider_id, "available": tok is not None and self._usable(tok),
              "source": "codex auth.json", "path": self.auth_path()}
         if tok is not None:
+            d["state"] = self.token_state(tok)
+            if not d["available"]:
+                d["hint"] = self.cli_hint
             if tok.expires_at is not None:
                 d["expires_at"] = rfc3339_format(tok.expires_at, "seconds")
             acct = tok.extra.get("account_id")
