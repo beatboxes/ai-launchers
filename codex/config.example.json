@@ -1,23 +1,25 @@
 {
-  "provider": "codex",
   "name": "codex-wrap",
-  "version": "0.1.0",
-  "base_url": "https://api.openai.com/v1/chat/completions",
-  "env_var": "OPENAI_API_KEY",
-  "op_ref": "",
-  "models": [
-    "gpt-4o",
-    "gpt-4o-mini",
-    "o1",
-    "o1-mini",
-    "o3",
-    "o3-mini",
-    "o4-mini",
-    "codex-mini",
-    "gpt-5.4",
-    "gpt-5.4-mini"
-  ],
-  "default_model": "gpt-4o",
-  "cli_target": "codex",
-  "roles": {}
+  "version": "0.2.0",
+  "description": "OpenAI GPT models (API key or ChatGPT/Codex login) as the brain of Claude Code",
+  "mode": "gateway",
+  "transports": [
+    {
+      "id": "openai",
+      "preset": "openai",
+      "auth": "api-key",
+      "env": ["OPENAI_API_KEY"],
+      "op_ref": "",
+      "default_model": "gpt-5.5",
+      "background_model": "gpt-5.4-mini"
+    },
+    {
+      "id": "codex",
+      "preset": "codex",
+      "auth": "login",
+      "default_model": "gpt-5.5",
+      "background_model": "gpt-5.5",
+      "setup": "run `codex login` with file-based credentials (cli_auth_credentials_store = \"file\" in ~/.codex/config.toml)"
+    }
+  ]
 }

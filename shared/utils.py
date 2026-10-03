@@ -1,87 +1,113 @@
-"""Shared utilities: config I/O, free-port bind, Windows shim, env helpers.
+"""Shared launcher utilities: per-user paths and JSON config/state I/O.
 
-Bug-fix patterns carried by this module:
-  H3  AIL_HOME respected (not a hardcoded absolute path)
-  H4  AIL_REPO respected for auto-sync source
-  M3  SO_REUSEADDR + retry on bind (TOCTOU port race)
-  L3  env-name filter compares VALUES not identity
+Every path is re-resolved on each call (never captured at import), so ``AIL_HOME``/``HOME`` changes
+apply immediately (tests, portable installs):
+
+  ail_home()        $AIL_HOME, else ~/.ai-launchers
+  config_path()     <ail_home>/config.json      user overrides: providers.<transport id>, gateway.port
+  credentials_path() <ail_home>/credentials.json API keys stored by ``keys set`` (0600)
+  state_path()      <ail_home>/state.json       one-time notices
+  cache_dir()       <ail_home>/cache            models.json discovery cache
+  logs_dir()        <ail_home>/logs             rotating gateway logs (+ optional JSONL trace)
+
+Readers never create anything (dry-run safe); only ``write_json``/``save_*`` touch the disk, atomically
+with mode 0600 (``gateway.atomicio``).
 """
+
 import json
 import os
-import socket
-import sys
 from pathlib import Path
 
 __all__ = [
-    "home_dir", "ail_home", "config_path", "load_config", "save_config",
-    "find_free_port", "wrap_for_windows", "env_filter_changed",
+    "VERSION", "home_dir", "ail_home", "config_path", "credentials_path", "state_path", "cache_dir",
+    "logs_dir", "read_json", "json_error", "write_json", "load_config", "save_config", "load_state", "save_state",
 ]
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
-def home_dir() -> Path:
-    """User home. Respects USERPROFILE on Windows, HOME elsewhere."""
-    return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or Path.home())
+def home_dir():
+    """User home: ``USERPROFILE`` (then ``HOME``) on Windows, ``HOME`` elsewhere."""
+    if os.name == "nt":
+        value = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    else:
+        value = os.environ.get("HOME")
+    return Path(value) if value else Path.home()
 
 
-def ail_home() -> Path:
-    """H3/H4: AIL_HOME honored live (re-resolved each call, never captured at import)."""
-    return Path(os.environ.get("AIL_HOME", home_dir() / ".ai-launchers"))
+def ail_home():
+    value = os.environ.get("AIL_HOME")
+    return Path(value) if value else home_dir() / ".ai-launchers"
 
 
-def config_path() -> Path:
+def config_path():
     return ail_home() / "config.json"
 
 
-def load_config() -> dict:
-    """Load ~/.ai-launchers/config.json; return {} if absent/invalid (never raise)."""
-    p = config_path()
-    if not p.exists():
-        return {}
+def credentials_path():
+    return ail_home() / "credentials.json"
+
+
+def state_path():
+    return ail_home() / "state.json"
+
+
+def cache_dir():
+    return ail_home() / "cache"
+
+
+def logs_dir():
+    return ail_home() / "logs"
+
+
+def read_json(path, default=None):
+    """Parsed JSON object at ``path``; ``default`` (``{}``) when missing, unreadable, invalid or not an object."""
+    fallback = {} if default is None else default
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+        with open(str(path), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return fallback
+    return data if isinstance(data, dict) else fallback
 
 
-def save_config(cfg: dict) -> None:
-    p = config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, indent=2, sort_keys=True), encoding="utf-8")
+def json_error(path):
+    """Why ``path`` is not a readable JSON object (``None`` when it is, or when it does not exist)."""
+    try:
+        with open(str(path), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return "%s: %s" % (path, exc)
+    return None if isinstance(data, dict) else "%s: expected a JSON object" % path
 
 
-def find_free_port(preferred: int = 0, retries: int = 5) -> int:
-    """M3: bind with SO_REUSEADDR; retry on failure. preferred=0 -> OS-assigned."""
-    if preferred and preferred > 0:
-        for _ in range(retries):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s.bind(("127.0.0.1", preferred))
-                    return preferred
-            except OSError:
-                continue
-    # fallback: let the OS pick
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def write_json(path, obj, private=False):
+    """Atomically write ``obj`` as pretty JSON with mode 0600 (parents created). ``private`` also applies
+    an owner-only ACL on Windows (``icacls``) — used for credentials."""
+    from .gateway import atomicio
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomicio.atomic_write_json(str(path), obj, indent=2, mode=0o600)
+    if private:
+        atomicio.restrict_permissions(str(path))
+    return path
 
 
-def wrap_for_windows(args):
-    """On Windows, wrap a python -m / script invocation so a detached child
-    does not open a console window. Returns args unchanged on non-Windows."""
-    if sys.platform != "win32":
-        return args
-    # caller is responsible for passing creationflags; this returns args only.
-    return args
+def load_config():
+    """``~/.ai-launchers/config.json`` (``{}`` if absent/invalid; never raises)."""
+    return read_json(config_path())
 
 
-def env_filter_changed(env: dict) -> dict:
-    """L3: return only env vars whose VALUE differs from the parent os.environ.
-    Used for printing what a launch injected without dumping the whole env."""
-    out = {}
-    for k, v in env.items():
-        if v != os.environ.get(k):
-            out[k] = v
-    return out
+def save_config(cfg):
+    return write_json(config_path(), cfg)
+
+
+def load_state():
+    return read_json(state_path())
+
+
+def save_state(state):
+    return write_json(state_path(), state)

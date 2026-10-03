@@ -15,9 +15,13 @@ Thumbs.db
 .idea/
 *.swp
 
-# User-local install artifacts (created by install.ps1 / install.sh)
+# User-local state (normally in ~/.ai-launchers; ignored in case AIL_HOME points into the repo)
 .ai-launchers/
 credentials.json
+state.json
 
-# Logs
+# Logs / traces
 *.log
+*.jsonl
+.ruff_cache/
+.mypy_cache/

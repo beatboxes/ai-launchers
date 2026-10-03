@@ -1,17 +1,25 @@
 {
-  "provider": "gemini",
   "name": "gemini-wrap",
-  "version": "0.1.0",
-  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-  "env_var": "GEMINI_API_KEY",
-  "op_ref": "",
-  "models": [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash-image"
-  ],
-  "default_model": "gemini-2.5-pro",
-  "cli_target": "",
-  "roles": {}
+  "version": "0.2.0",
+  "description": "Google Gemini (API key or Vertex AI via gcloud ADC) as the brain of Claude Code",
+  "mode": "gateway",
+  "transports": [
+    {
+      "id": "gemini",
+      "preset": "gemini",
+      "auth": "api-key",
+      "env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "op_ref": "",
+      "default_model": "gemini-3.1-pro-preview",
+      "background_model": "gemini-3.8-flash"
+    },
+    {
+      "id": "gemini-vertex",
+      "preset": "gemini-vertex",
+      "auth": "adc",
+      "default_model": "gemini-3.1-pro-preview",
+      "background_model": "gemini-3.8-flash",
+      "setup": "run `gcloud auth application-default login` and set GOOGLE_CLOUD_PROJECT (optional GOOGLE_CLOUD_LOCATION, default global)"
+    }
+  ]
 }

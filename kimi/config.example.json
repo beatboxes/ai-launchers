@@ -1,19 +1,25 @@
 {
-  "provider": "kimi",
   "name": "kimi-wrap",
-  "version": "0.1.0",
-  "base_url": "https://api.moonshot.ai/v1/chat/completions",
-  "env_var": "MOONSHOT_API_KEY",
-  "op_ref": "",
-  "models": [
-    "kimi-k3",
-    "kimi-k2.7-code",
-    "kimi-k2.7-code-highspeed",
-    "kimi-k2.6",
-    "kimi-k2.5",
-    "moonshot-v1-auto"
-  ],
-  "default_model": "kimi-k3",
-  "cli_target": "",
-  "roles": {}
+  "version": "0.2.0",
+  "description": "Moonshot Kimi via its official Anthropic-compatible endpoint (direct, no gateway)",
+  "mode": "direct",
+  "transports": [
+    {
+      "id": "kimi",
+      "preset": "kimi",
+      "auth": "api-key",
+      "env": ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+      "op_ref": "",
+      "base_url": "https://api.moonshot.ai/anthropic",
+      "list_url": "https://api.moonshot.ai/v1/models",
+      "model_env": {
+        "ANTHROPIC_MODEL": "kimi-k3[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi-k3[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k3[1m]",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL": "kimi-k3[1m]",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k2.7-code"
+      }
+    }
+  ]
 }

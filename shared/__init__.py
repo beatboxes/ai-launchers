@@ -1,15 +1,10 @@
-"""ai-launchers shared package.
-
-Provider-agnostic building blocks for the `grok`/`codex`/`gemini`/`deepseek`/
-`kimi launch claude` launchers. Each module is standalone (no circular imports).
+"""ai-launchers shared package: the launcher layer behind every ``<provider>-wrap`` command.
 
 Modules:
-  utils.py        config load/save, free-port, Windows shim, version
-  key_manager.py  unified set/remove/list; env: + op:// + credentials.json
-  ccr_bridge.py   compile/write claude-code-router config, daemon lifecycle
-  auth_bridge.py  localhost OpenAI-compat bridge for stored-auth CLIs (grok/codex)
-  scrub_proxy.py  ollama reasoning-field scrub proxy
-  base_launcher.py argparse + dispatch (launch/keys/models/version/help)
+  base_launcher.py  manifests, transports, ``launch``/``models``/``keys``/``doctor`` commands
+  key_manager.py    credentials.json (0600) + secret-source helpers (env -> op:// -> credentials.json)
+  utils.py          per-user paths (AIL_HOME, config, state, cache, logs) and atomic JSON I/O
+  gateway/          stdlib Anthropic-Messages gateway (see gateway/DESIGN.md); vendored into fry
 """
 
-__version__ = "0.1.0"
+from .utils import VERSION as __version__  # noqa: F401
