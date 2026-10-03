@@ -1,8 +1,8 @@
 {
   "name": "kimi-wrap",
   "version": "0.2.0",
-  "description": "Moonshot Kimi via its official Anthropic-compatible endpoint (direct, no gateway)",
-  "mode": "direct",
+  "description": "Moonshot Kimi models as the brain of Claude Code (official Anthropic-compatible endpoint, via the gateway)",
+  "mode": "gateway",
   "transports": [
     {
       "id": "kimi",
@@ -10,16 +10,9 @@
       "auth": "api-key",
       "env": ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
       "op_ref": "",
-      "base_url": "https://api.moonshot.ai/anthropic",
-      "list_url": "https://api.moonshot.ai/v1/models",
-      "model_env": {
-        "ANTHROPIC_MODEL": "kimi-k3[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi-k3[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k3[1m]",
-        "ANTHROPIC_DEFAULT_FABLE_MODEL": "kimi-k3[1m]",
-        "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3[1m]",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k2.7-code"
-      }
+      "default_model": "kimi-k3",
+      "background_model": "kimi-k2.7-code",
+      "list_url": "https://api.moonshot.ai/v1/models"
     }
   ]
 }

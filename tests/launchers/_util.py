@@ -16,12 +16,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from shared import base_launcher, key_manager, utils  # noqa: E402,F401
+from shared import base_launcher  # noqa: E402
 from shared.gateway import secrets as gw_secrets  # noqa: E402
 
 LAUNCHERS = ("grok", "codex", "gemini", "deepseek", "kimi")
-GATEWAY_LAUNCHERS = ("grok", "codex", "gemini")
-DIRECT_LAUNCHERS = ("deepseek", "kimi")
 SENTINEL = "FAKEKEY-SENTINEL"
 KEY_ENV = {"grok": "XAI_API_KEY", "codex": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY",
            "deepseek": "DEEPSEEK_API_KEY", "kimi": "MOONSHOT_API_KEY"}

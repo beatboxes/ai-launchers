@@ -96,18 +96,21 @@ class ModelsTests(LauncherTestCase):
         ids = [m["id"] for m in transports["gemini"]["models"] if m["source"] == "discovered"]
         self.assertEqual(ids, ["gemini-9-pro"])
 
-    def test_direct_mode_list_url(self):
-        os.environ["DEEPSEEK_API_KEY"] = fake_key("deepseek")
+    def test_passthrough_vendor_list_url(self):
+        key = fake_key("deepseek")
+        os.environ["DEEPSEEK_API_KEY"] = key
         with MockServer(handler=list_handler({"data": [{"id": "deepseek-v5"}]})) as mock:
             self.write_config({"providers": {"deepseek": {"list_url": mock.url + "/models"}}})
             transports, data = self.models_json("deepseek")
+            self.assertEqual(mock.requests[0]["headers"].get("Authorization"), "Bearer " + key)
         t = transports["deepseek"]
-        self.assertEqual(data["mode"], "direct")
-        self.assertEqual(t["base_url"], "https://api.deepseek.com/anthropic")
-        self.assertEqual(t["model_env"]["ANTHROPIC_MODEL"], "deepseek-v4-pro[1m]")
+        self.assertEqual(data["mode"], "gateway")
+        self.assertEqual((t["default_model"], t["background_model"]), ("deepseek-v4-pro", "deepseek-v4-flash"))
         found = [m for m in t["models"] if m["id"] == "deepseek-v5"]
         self.assertEqual(found[0]["source"], "discovered")
-        self.assertIsNone(found[0]["picker_id"])
+        self.assertEqual(found[0]["picker_id"], "claude-via-deepseek,deepseek-v5")
+        pro = [m for m in t["models"] if m["id"] == "deepseek-v4-pro"]
+        self.assertEqual(pro[0]["picker_id"], "claude-via-deepseek,deepseek-v4-pro[1m]")
 
     def test_no_keys_no_network(self):
         transports, data = self.models_json("grok")

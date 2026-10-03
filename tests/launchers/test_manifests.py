@@ -7,9 +7,8 @@ import json
 import os
 import unittest
 
-from ._util import (DIRECT_LAUNCHERS, GATEWAY_LAUNCHERS, LAUNCHERS, REPO_ROOT, LauncherTestCase, base_launcher,
-                    manifest_path)
-from shared.gateway import catalog, launchkit, presets
+from ._util import LAUNCHERS, REPO_ROOT, LauncherTestCase, base_launcher, manifest_path
+from shared.gateway import catalog, presets
 
 
 def _raw(name):
@@ -24,6 +23,8 @@ EXPECTED = {
                           ("codex", "codex", "login", "gpt-5.5", "gpt-5.5")]),
     "gemini": ("gateway", [("gemini", "gemini", "api-key", "gemini-3.1-pro-preview", "gemini-3.8-flash"),
                            ("gemini-vertex", "gemini-vertex", "adc", "gemini-3.1-pro-preview", "gemini-3.8-flash")]),
+    "deepseek": ("gateway", [("deepseek", "deepseek", "api-key", "deepseek-v4-pro", "deepseek-v4-flash")]),
+    "kimi": ("gateway", [("kimi", "kimi", "api-key", "kimi-k3", "kimi-k2.7-code")]),
 }
 
 
@@ -36,7 +37,7 @@ class ManifestContentTests(unittest.TestCase):
             self.assertEqual(m["version"], "0.2.0")
             base_launcher.load_manifest(manifest_path(name))
 
-    def test_gateway_transports_match_plan(self):
+    def test_transports_match_plan(self):
         for name, (mode, transports) in EXPECTED.items():
             m = _raw(name)
             self.assertEqual(m["mode"], mode)
@@ -53,45 +54,22 @@ class ManifestContentTests(unittest.TestCase):
         self.assertEqual(env["deepseek"], ["DEEPSEEK_API_KEY"])
         self.assertEqual(env["kimi"][0], "MOONSHOT_API_KEY")
 
-    def test_deepseek_direct(self):
-        m = _raw("deepseek")
-        self.assertEqual(m["mode"], "direct")
-        t = m["transports"][0]
-        self.assertEqual(t["base_url"], "https://api.deepseek.com/anthropic")
-        pro, flash = "deepseek-v4-pro[1m]", "deepseek-v4-flash[1m]"
-        self.assertEqual(t["model_env"], {
-            "ANTHROPIC_MODEL": pro, "ANTHROPIC_DEFAULT_OPUS_MODEL": pro, "ANTHROPIC_DEFAULT_SONNET_MODEL": pro,
-            "ANTHROPIC_DEFAULT_FABLE_MODEL": pro, "ANTHROPIC_DEFAULT_HAIKU_MODEL": flash})
-        self.assertEqual(t["env_extra"], {"CLAUDE_CODE_EFFORT_LEVEL": "max",
-                                          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
-
-    def test_kimi_direct(self):
-        m = _raw("kimi")
-        self.assertEqual(m["mode"], "direct")
-        t = m["transports"][0]
-        self.assertEqual(t["base_url"], "https://api.moonshot.ai/anthropic")
-        k3 = "kimi-k3[1m]"
-        self.assertEqual(t["model_env"], {
-            "ANTHROPIC_MODEL": k3, "ANTHROPIC_DEFAULT_OPUS_MODEL": k3, "ANTHROPIC_DEFAULT_SONNET_MODEL": k3,
-            "ANTHROPIC_DEFAULT_FABLE_MODEL": k3, "CLAUDE_CODE_SUBAGENT_MODEL": k3,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k2.7-code"})
+    def test_passthrough_vendors(self):
+        vendors = (("deepseek", "https://api.deepseek.com/anthropic"), ("kimi", "https://api.moonshot.ai/anthropic"))
+        for name, base in vendors:
+            t = _raw(name)["transports"][0]
+            self.assertNotIn("base_url", t)   # the gateway preset owns the endpoint
+            preset = presets.PRESETS[t["preset"]]
+            self.assertEqual((preset["dialect"], preset["base_url"]), ("anthropic_passthrough", base))
+        self.assertEqual(_raw("deepseek")["transports"][0]["env_extra"], {"CLAUDE_CODE_EFFORT_LEVEL": "max"})
+        self.assertNotIn("env_extra", _raw("kimi")["transports"][0])
 
     def test_models_exist_in_catalog(self):
-        for name in GATEWAY_LAUNCHERS:
+        for name in LAUNCHERS:
             for t in _raw(name)["transports"]:
                 family = presets.PRESETS[t["preset"]]["catalog"]
                 for key in ("default_model", "background_model"):
                     self.assertIsNotNone(catalog.find_model(family, t[key]), (name, t["id"], t[key]))
-        for name in DIRECT_LAUNCHERS:
-            t = _raw(name)["transports"][0]
-            family = presets.PRESETS[t["preset"]]["catalog"]
-            for value in t["model_env"].values():
-                self.assertIsNotNone(catalog.find_model(family, value.replace("[1m]", "")), (name, value))
-
-    def test_direct_model_vars_match_launchkit(self):
-        allowed = set(launchkit.MODEL_ENV_KEYS.values())
-        for name in DIRECT_LAUNCHERS:
-            self.assertLessEqual(set(_raw(name)["transports"][0]["model_env"]), allowed)
 
 
 class ManifestValidationTests(unittest.TestCase):
@@ -111,13 +89,18 @@ class ManifestValidationTests(unittest.TestCase):
             ("grok", lambda m: m["transports"][0].update(bogus=1), "unknown key 'bogus'"),
             ("grok", lambda m: m["transports"][0].update(env=[]), "env must be"),
             ("grok", lambda m: m["transports"][1].update(env=["X"]), "only applies to api-key"),
-            ("grok", lambda m: m["transports"][0].update(model_env={"ANTHROPIC_MODEL": "x"}), "direct mode"),
+            ("grok", lambda m: m["transports"][0].update(model_env={"X": "x"}), "unknown key 'model_env'"),
             ("grok", lambda m: m.update(transports=[]), "non-empty"),
-            ("deepseek", lambda m: m["transports"][0]["model_env"].pop("ANTHROPIC_MODEL"), "ANTHROPIC_MODEL required"),
-            ("deepseek", lambda m: m["transports"][0]["model_env"].update(ANTHROPIC_FOO="x"), "not a model variable"),
-            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(ANTHROPIC_AUTH_TOKEN="x"), "may not set"),
-            ("deepseek", lambda m: m["transports"].append(dict(m["transports"][0], id="d2")), "exactly one"),
+            ("deepseek", lambda m: m.update(mode="direct"), "mode must be one of gateway"),
+            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(ANTHROPIC_AUTH_TOKEN="x"), "non-secret"),
+            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(CLAUDE_CODE_OAUTH_TOKEN="x"), "non-secret"),
+            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(CLAUDE_CODE_USE_BEDROCK="1"), "non-secret"),
+            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(CLAUDE_CODE_API_KEY_HELPER="x"),
+             "non-secret"),
+            ("deepseek", lambda m: m["transports"][0]["env_extra"].update(CLAUDE_CODE_EFFORT_LEVEL=3),
+             "must be a string"),
             ("kimi", lambda m: m["transports"][0].update(base_url="ftp://x"), "base_url must be"),
+            ("kimi", lambda m: m["transports"][0].update(list_url="nope"), "list_url must be"),
         ]
         for name, mutate, needle in cases:
             self.assertIn(needle, self._problems(name, mutate), needle)

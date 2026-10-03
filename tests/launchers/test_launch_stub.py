@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 
-from ._util import REPO_ROOT, SENTINEL, LauncherTestCase, fake_key
+from ._util import KEY_ENV, LAUNCHERS, REPO_ROOT, SENTINEL, LauncherTestCase, fake_key
 from shared.gateway import compat
 
 
@@ -146,23 +146,39 @@ class GatewayLaunchTests(LauncherTestCase):
         self.assertEqual(self.read_record(record)["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:%d" % port)
 
 
-class DirectLaunchTests(LauncherTestCase):
-    def test_deepseek_direct_launch(self):
-        key = fake_key("deepseek")
-        os.environ["DEEPSEEK_API_KEY"] = key
-        record = self.install_stub_claude(fetch=False)
-        threads = set(threading.enumerate())
-        rc, out, err = self.run_cli("deepseek", "launch", "claude", "--", "-p", "hi")
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(set(threading.enumerate()), threads, "direct mode must not start a gateway")
-        env = self.read_record(record)["env"]
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], key)
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "")
-        self.assertNotIn("DEEPSEEK_API_KEY", env)
-        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-v4-pro[1m]")
-        self.assertIn("direct (no gateway)", err)
-        self.assertNotIn(SENTINEL, out + err)
+class AllLaunchersHygieneTests(LauncherTestCase):
+    """Every launcher (incl. DeepSeek/Kimi passthrough) keeps the provider key out of Claude Code's env."""
+
+    DEFAULTS = {"grok": "claude-via-xai,grok-4.7[1m]", "codex": "claude-via-openai,gpt-5.5",
+                "gemini": "claude-via-gemini,gemini-3.1-pro-preview[1m]",
+                "deepseek": "claude-via-deepseek,deepseek-v4-pro[1m]", "kimi": "claude-via-kimi,kimi-k3[1m]"}
+
+    def test_provider_key_never_in_child_env(self):
+        for name in LAUNCHERS:
+            with self.subTest(launcher=name):
+                key = fake_key("%s-hygiene" % name)
+                for var in KEY_ENV.values():
+                    os.environ.pop(var, None)
+                os.environ[KEY_ENV[name]] = key
+                os.environ["SOME_COPY"] = "copied:%s" % key
+                record = self.install_stub_claude(rc=0, fetch=True)
+                rc, out, err = self.run_cli(name, "launch", "claude", "--", "-p", "hi")
+                self.assertEqual(rc, 0, err)
+                rec = self.read_record(record)
+                env = rec["env"]
+                self.assertEqual([k for k, v in env.items() if key in v or SENTINEL in v], [],
+                                 "provider key leaked into the child env")
+                self.assertNotIn(key, " ".join(rec["argv"]))
+                self.assertNotIn(KEY_ENV[name], env)
+                self.assertEqual(env["ANTHROPIC_API_KEY"], "")
+                self.assertTrue(env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:"))
+                self.assertEqual(env["ANTHROPIC_MODEL"], self.DEFAULTS[name])
+                self.assertEqual(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "claude-via-background")
+                self.assertEqual(env.get("CLAUDE_CODE_EFFORT_LEVEL"), "max" if name == "deepseek" else None)
+                self.assertEqual(rec.get("models_status"), 200, rec.get("models_error"))
+                self.assertEqual(rec["models"]["data"][0]["id"], self.DEFAULTS[name])
+                self.assertNotIn(SENTINEL, out + err)
+                self.assertEqual(_wait_no_gateway_threads(), [])
 
 
 class SubprocessLaunchTests(LauncherTestCase):

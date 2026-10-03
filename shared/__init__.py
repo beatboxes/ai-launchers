@@ -7,4 +7,6 @@ Modules:
   gateway/          stdlib Anthropic-Messages gateway (see gateway/DESIGN.md); vendored into fry
 """
 
-from .utils import VERSION as __version__  # noqa: F401
+from .utils import VERSION as __version__
+
+__all__ = ["__version__"]

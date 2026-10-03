@@ -15,29 +15,26 @@ Each launcher has a `-wrap` suffix so its shim never shadows the native `grok`/`
 
 ## How it works
 
-There is **no claude-code-router** any more. Two modes:
-
-- **gateway** (grok, codex, gemini): the launcher starts a small stdlib-only Python gateway
-  (`shared/gateway/`, see its `DESIGN.md`) **in-process** on `127.0.0.1` (random port, random per-launch
-  bearer token), then runs `claude` with `ANTHROPIC_BASE_URL` pointing at it. The gateway speaks the
-  Anthropic Messages API to Claude Code and translates every request to the provider's native dialect
-  (OpenAI chat / Responses, Gemini `streamGenerateContent`, …): SSE streaming with heartbeats, tool
-  calls, thinking, images/PDFs in tool results, tool-name and JSON-schema fix-ups, proper error
-  statuses (Claude Code retries transient errors and stops on terminal quota errors). It stops when
-  `claude` exits — there is no daemon to clean up.
-- **direct** (deepseek, kimi): those providers ship an official Anthropic-compatible endpoint, so the
-  launcher just runs `claude` with the right `ANTHROPIC_BASE_URL` / model variables. No gateway.
+There is **no claude-code-router** any more. Every launcher starts a small stdlib-only Python gateway
+(`shared/gateway/`, see its `DESIGN.md`) **in-process** on `127.0.0.1` (random port, random per-launch
+bearer token), then runs `claude` with `ANTHROPIC_BASE_URL` pointing at it. The gateway speaks the
+Anthropic Messages API to Claude Code and translates every request to the provider's native dialect
+(OpenAI chat / Responses, Gemini `streamGenerateContent`, …): SSE streaming with heartbeats, tool calls,
+thinking, images/PDFs in tool results, tool-name and JSON-schema fix-ups, proper error statuses (Claude
+Code retries transient errors and stops on terminal quota errors). DeepSeek and Kimi already speak the
+Anthropic API, so for them the gateway only forwards the request to the vendor's official endpoint with
+your key attached. The gateway stops when `claude` exits — there is no daemon to clean up.
 
 Claude Code's model picker (`/model`) lists every model the gateway can route, as
 `claude-via-<transport>,<model>` ids (the `claude-via-` prefix is required by Claude Code's gateway model
 discovery). `claude-via-background` serves Claude Code's small background requests.
 
-What the launcher **never** does: write `~/.claude.json` or `~/.claude/settings.json`, put your provider
-key into Claude Code's environment or argv (the gateway holds it in memory; Claude Code only gets the
-per-launch gateway token), or keep anything running after `claude` exits. The one exception is direct
-mode: there Claude Code itself must authenticate to the vendor, so the key is passed as
-`ANTHROPIC_AUTH_TOKEN` (and nowhere else) — exactly as in DeepSeek's and Moonshot's own setup guides,
-which also means commands Claude Code runs (e.g. its Bash tool) can read it.
+**No provider key or login token ever enters Claude Code's environment or argv** — for every launcher
+the gateway holds credentials in memory and Claude Code only gets the random per-launch gateway token,
+so nothing Claude Code runs (its Bash tool, hooks, MCP servers) can read your keys. The provider's key
+variables (e.g. `DEEPSEEK_API_KEY`) are removed from Claude Code's environment too. The launcher also
+never writes `~/.claude.json` or `~/.claude/settings.json`, and never leaves anything running after
+`claude` exits.
 
 Inherited `ANTHROPIC_*` / `CLAUDE_CODE_USE_*` variables that would hijack the session are cleared or
 overridden, and `ANTHROPIC_API_KEY` is set to empty so Claude Code never asks to approve a key.
@@ -53,8 +50,8 @@ the choice.
 | `grok-wrap` | gateway | `xai` API key (`XAI_API_KEY`, chat/completions) → `grok` login (Grok CLI proxy, auto-fallback to api.x.ai) | `grok-4.7` / `grok-4.20-0309-non-reasoning` |
 | `codex-wrap` | gateway | `openai` API key (`OPENAI_API_KEY`, Responses API) → `codex` ChatGPT login (Codex backend) | `gpt-5.5` / `gpt-5.4-mini` (key), `gpt-5.5` at low effort (login) |
 | `gemini-wrap` | gateway | `gemini` API key (`GEMINI_API_KEY` or `GOOGLE_API_KEY`) → `gemini-vertex` Vertex AI via gcloud ADC | `gemini-3.1-pro-preview` / `gemini-3.8-flash` |
-| `deepseek-wrap` | direct | `deepseek` API key (`DEEPSEEK_API_KEY`) → `https://api.deepseek.com/anthropic` | `deepseek-v4-pro[1m]` (opus/sonnet/fable) / `deepseek-v4-flash[1m]` (haiku), effort max |
-| `kimi-wrap` | direct | `kimi` API key (`MOONSHOT_API_KEY` or `KIMI_API_KEY`) → `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]` (opus/sonnet/fable/subagents) / `kimi-k2.7-code` (haiku) |
+| `deepseek-wrap` | gateway | `deepseek` API key (`DEEPSEEK_API_KEY`) → `https://api.deepseek.com/anthropic` (passthrough) | `deepseek-v4-pro[1m]` / `deepseek-v4-flash[1m]`, plus `CLAUDE_CODE_EFFORT_LEVEL=max` |
+| `kimi-wrap` | gateway | `kimi` API key (`MOONSHOT_API_KEY` or `KIMI_API_KEY`) → `https://api.moonshot.ai/anthropic` (passthrough) | `kimi-k3[1m]` / `kimi-k2.7-code` |
 
 API keys are resolved (in parallel) from: the env vars above → an `op://` 1Password reference
 (`providers.<transport>.op_ref`) → `~/.ai-launchers/credentials.json`. `codex-wrap` also picks up a key
@@ -148,14 +145,15 @@ forces it). Discovered models also appear in Claude Code's `/model` picker.
     "xai":    {"op_ref": "op://Personal/xAI/credential", "default_model": "grok-4.6"},
     "openai": {"env": ["OPENAI_API_KEY", "MY_OPENAI_KEY"]},
     "gemini-vertex": {"options": {"project": "my-project", "location": "us-central1"}},
-    "deepseek": {"default_model": "deepseek-v4-flash[1m]"}
+    "deepseek": {"default_model": "deepseek-v4-flash"}
   }
 }
 ```
 
 Per transport id you may override `base_url`, `env`, `op_ref`, `models` (a list replaces the catalog),
-`default_model`, `background_model` and `options`; direct transports also accept `model_env` and
-`list_url`. v0.1 full `…/chat/completions` URLs are ignored with a warning.
+`default_model`, `background_model` (bare model ids; the `[1m]` picker suffix is added automatically for
+1M-context models), `options` and `list_url` (the model-list endpoint used by `models`). v0.1 full
+`…/chat/completions` URLs are ignored with a warning.
 
 ## Doctor
 
@@ -168,8 +166,8 @@ upstream overrides, and warns when `~/.claude/settings.json` sets `env.ANTHROPIC
 streaming Anthropic request through `http://127.0.0.1:<port>/v1/messages` — exactly the path Claude Code
 uses — offering a `get_magic(n: int)` tool with `tool_choice: any`. It checks that the model calls
 `get_magic` with `n=7`, returns the tool result `42`, and checks that the final answer contains 42; it
-prints latency and token usage. **Each route costs two tiny paid requests.** Direct-mode launchers run
-the same check against the provider's Anthropic endpoint. Exit status is non-zero on any failure.
+prints latency and token usage. **Each route costs two tiny paid requests.** Exit status is non-zero on
+any failure.
 
 ## Troubleshooting
 

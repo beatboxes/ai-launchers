@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
-from ._util import DIRECT_LAUNCHERS, KEY_ENV, LAUNCHERS, SENTINEL, LauncherTestCase, fake_key
+from ._util import KEY_ENV, LAUNCHERS, SENTINEL, LauncherTestCase, fake_key
 
 
 def _forbid(what, violations):
@@ -57,12 +57,10 @@ class DryRunTests(LauncherTestCase):
             self.assertIn("stub.py -p 'hi there'" if os.name != "nt" else "hi there", out)
             self.assertIn("ANTHROPIC_API_KEY=", out)
             self.assertIn("- %s" % KEY_ENV[name], out)
-            if name in DIRECT_LAUNCHERS:
-                self.assertIn("ANTHROPIC_AUTH_TOKEN=<redacted>", out)
-            else:
-                self.assertIn("route table", out)
-                self.assertIn("ANTHROPIC_AUTH_TOKEN=<per-launch random token>", out)
-                self.assertIn("ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-via-background", out)
+            self.assertIn("route table", out)
+            self.assertIn("ANTHROPIC_AUTH_TOKEN=<per-launch random token>", out)
+            self.assertIn("ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-via-background", out)
+            self.assertEqual("CLAUDE_CODE_EFFORT_LEVEL=max" in out, name == "deepseek", name)
         self.assertEqual(fake_bins.read_calls(self.bin), [])
 
     def test_debug_prints_full_table_and_port(self):

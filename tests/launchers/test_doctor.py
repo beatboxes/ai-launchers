@@ -1,6 +1,5 @@
 """`doctor` static checks and `doctor --live` (get_magic(n=7) -> 42 tool round trip) against mock upstreams."""
 
-import json
 import os
 import stat
 import threading
@@ -175,14 +174,14 @@ class DoctorLiveTests(LauncherTestCase):
         self.assertIn("[FAIL] claude-via-xai,grok-4.3[1m]", out)
         self.assertIn("expected 7", out)
 
-    def test_direct_route_ok(self):
+    def test_passthrough_route_ok(self):
         key = fake_key("deepseek")
         os.environ["DEEPSEEK_API_KEY"] = key
         rc, out, err, reqs, errors = self.live("deepseek", "anthropic", "AI_GATEWAY_UPSTREAM_DEEPSEEK", "",
                                                {"key": key}, MagicBrain(7))
         self.assertEqual(errors, [])
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("[ok] deepseek-v4-pro", out)
+        self.assertIn("[ok] claude-via-deepseek,deepseek-v4-pro[1m]", out)
         msgs = [r for r in reqs if r["path"].endswith("/v1/messages")]
         self.assertEqual(len(msgs), 2)
         self.assertEqual(msgs[0]["body_json"]["model"], "deepseek-v4-pro")

@@ -1,5 +1,5 @@
 """Transport selection (order, --auth filter, login/ADC availability, key sources), route tables per
-launcher, --model routing, user overrides, discovery-cache merge and direct-mode environments."""
+launcher, --model routing, user overrides, discovery-cache merge and the DeepSeek/Kimi passthrough routes."""
 
 import json
 import os
@@ -9,7 +9,6 @@ from unittest import mock
 
 from ._util import SENTINEL, LauncherTestCase, base_launcher, fake_key
 from shared.gateway import compat
-from shared.gateway import config as gwconfig
 
 
 class FakeAuth(object):
@@ -247,67 +246,44 @@ class RouteTableTests(LauncherTestCase):
         self.assertNotIn("grok-9", [m.id for m in table.providers["xai"].models])
 
 
-class DirectEnvTests(LauncherTestCase):
-    def env(self, name, var, model=None):
-        key = fake_key(name)
-        os.environ[var] = key
-        os.environ["COPY_OF_KEY"] = "prefix-%s" % key
+class PassthroughVendorTests(LauncherTestCase):
+    """DeepSeek / Kimi: official Anthropic-compatible endpoints, reached through the gateway."""
+
+    def table(self, name, var, model=None):
+        os.environ[var] = fake_key(name)
         launcher = self.launcher(name)
         selected, store = launcher.resolve()
-        return key, launcher.direct_env(selected[0], store, store.get(selected[0].secret_name), model)
+        return launcher, launcher.route_table(selected, model), store
 
     def test_deepseek(self):
-        key, env = self.env("deepseek", "DEEPSEEK_API_KEY")
-        pro, flash = "deepseek-v4-pro[1m]", "deepseek-v4-flash[1m]"
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], key)
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "")
-        for var in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_FABLE_MODEL"):
-            self.assertEqual(env[var], pro, var)
-        self.assertEqual(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], flash)
-        self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
-        self.assertNotIn("DEEPSEEK_API_KEY", env)
-        self.assertNotIn("COPY_OF_KEY", env)
-        self.assertNotIn("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", env)
-        self.assertEqual([k for k, v in env.items() if SENTINEL in v], ["ANTHROPIC_AUTH_TOKEN"])
-
-    def test_deepseek_model_flag(self):
-        _, env = self.env("deepseek", "DEEPSEEK_API_KEY", "deepseek-v4-flash")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-v4-flash[1m]")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_OPUS_MODEL"], "deepseek-v4-flash[1m]")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "deepseek-v4-flash[1m]")
+        launcher, table, store = self.table("deepseek", "DEEPSEEK_API_KEY")
+        p = table.providers["deepseek"]
+        self.assertEqual((p.dialect, p.base_url), ("anthropic_passthrough", "https://api.deepseek.com/anthropic"))
+        self.assertEqual(p.auth["secret"], "deepseek")
+        self.assertEqual(store.get("deepseek"), fake_key("deepseek"))
+        self.assertEqual(table.roles, {"default": "deepseek,deepseek-v4-pro",
+                                       "background": "deepseek,deepseek-v4-flash"})
+        self.assertEqual(launcher.default_route(table)[2], "claude-via-deepseek,deepseek-v4-pro[1m]")
+        self.assertEqual(table.picker_id("deepseek", "deepseek-v4-flash"), "claude-via-deepseek,deepseek-v4-flash[1m]")
+        _, table, _ = self.table("deepseek", "DEEPSEEK_API_KEY", "deepseek-v4-flash")
+        self.assertEqual(table.roles["default"], "deepseek,deepseek-v4-flash")
 
     def test_kimi(self):
-        key, env = self.env("kimi", "KIMI_API_KEY")
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.moonshot.ai/anthropic")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], key)
-        for var in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_FABLE_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
-            self.assertEqual(env[var], "kimi-k3[1m]", var)
-        self.assertEqual(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "kimi-k2.7-code")
-        self.assertNotIn("KIMI_API_KEY", env)
-        _, env = self.env("kimi", "MOONSHOT_API_KEY", "kimi-k2.7-code")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "kimi-k2.7-code")
-        self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "kimi-k2.7-code")
+        launcher, table, _ = self.table("kimi", "KIMI_API_KEY")
+        p = table.providers["kimi"]
+        self.assertEqual((p.dialect, p.base_url), ("anthropic_passthrough", "https://api.moonshot.ai/anthropic"))
+        self.assertEqual(table.roles, {"default": "kimi,kimi-k3", "background": "kimi,kimi-k2.7-code"})
+        self.assertEqual(launcher.default_route(table)[2], "claude-via-kimi,kimi-k3[1m]")
+        self.assertEqual(table.picker_id("kimi", "kimi-k2.7-code"), "claude-via-kimi,kimi-k2.7-code")
 
     def test_overrides(self):
-        os.environ["AI_GATEWAY_UPSTREAM_DEEPSEEK"] = "http://127.0.0.1:5/anthropic/"
-        self.write_config({"providers": {"deepseek": {"default_model": "deepseek-v4-flash[1m]",
+        os.environ["AI_GATEWAY_UPSTREAM_DEEPSEEK"] = "http://127.0.0.1:5/anthropic"
+        self.write_config({"providers": {"deepseek": {"default_model": "deepseek-v4-flash",
                                                       "background_model": "deepseek-v4-flash"}}})
-        _, env = self.env("deepseek", "DEEPSEEK_API_KEY")
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:5/anthropic")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-v4-flash[1m]")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_FABLE_MODEL"], "deepseek-v4-flash[1m]")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "deepseek-v4-flash")
-
-    def test_direct_rejects_provider_model_pair(self):
-        os.environ["DEEPSEEK_API_KEY"] = fake_key("d")
-        os.environ["AI_LAUNCHERS_CLAUDE_BIN"] = os.path.join(self.bin, "missing-claude")
-        rc, _, err = self.run_cli("deepseek", "launch", "claude", "--dry-run", "--model", "deepseek,x")
-        self.assertEqual(rc, 2)
-        self.assertIn("bare deepseek model id", err)
+        _, table, _ = self.table("deepseek", "DEEPSEEK_API_KEY")
+        self.assertEqual(table.providers["deepseek"].base_url, "http://127.0.0.1:5/anthropic")
+        self.assertEqual(table.roles, {"default": "deepseek,deepseek-v4-flash",
+                                       "background": "deepseek,deepseek-v4-flash"})
 
 
 class BaseEnvTests(LauncherTestCase):

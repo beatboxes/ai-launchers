@@ -2,18 +2,19 @@
 
 Each ``<x>-wrap.py`` calls ``run(<its config.example.json>)``. The manifest (v0.2.0) declares:
 
-* ``mode`` — ``gateway``: Claude Code talks to the in-process stdlib gateway (``shared/gateway``),
-  which translates to the provider's dialect; ``direct``: Claude Code talks straight to the provider's
-  official Anthropic-compatible endpoint (no gateway, key injected as ``ANTHROPIC_AUTH_TOKEN`` only).
+* ``mode`` — ``gateway`` (the only mode): Claude Code talks to the in-process stdlib gateway
+  (``shared/gateway``), which holds the provider credentials and translates to the provider's dialect
+  (Anthropic-compatible vendors such as DeepSeek/Kimi go through ``anthropic_passthrough``).
 * ``transports`` — ordered, API-key transports first. Each names a gateway preset; ``auth`` is
-  ``api-key`` | ``login`` | ``adc``. The user's ``~/.ai-launchers/config.json`` may override
-  ``providers.<transport id>.{base_url, env, op_ref, models, default_model, background_model, options}``
-  and ``gateway.port``.
+  ``api-key`` | ``login`` | ``adc``; optional ``env_extra`` adds non-secret ``CLAUDE_CODE_*`` settings to
+  Claude Code's environment and ``list_url`` names a model-list endpoint that cannot be derived from
+  ``base_url``. The user's ``~/.ai-launchers/config.json`` may override ``providers.<transport id>.{base_url,
+  env, op_ref, models, default_model, background_model, options, list_url}`` and ``gateway.port``.
 
 Commands: ``launch claude`` / ``models`` / ``keys`` / ``doctor`` / ``--version`` / ``--help``.
 Invariants: ``~/.claude.json`` and ``~/.claude/settings.json`` are never written; provider secrets
-live only in the gateway's in-memory ``SecretStore`` (never in the child env or argv, except the
-direct-mode ``ANTHROPIC_AUTH_TOKEN``); ``--dry-run`` writes no files and starts no threads, servers,
+live only in the gateway's in-memory ``SecretStore`` — never in Claude Code's environment or argv (it
+gets a random per-launch gateway token); ``--dry-run`` writes no files and starts no threads, servers,
 subprocesses or network requests; the gateway logs only to ``~/.ai-launchers/logs/`` while Claude
 Code runs.
 """
@@ -32,7 +33,7 @@ import time
 
 from . import key_manager
 from .gateway import __version__ as GATEWAY_VERSION
-from .gateway import catalog, compat, presets
+from .gateway import compat, presets
 from .gateway import config as gwconfig
 from .utils import (VERSION, cache_dir, config_path, home_dir, json_error, load_config, load_state, logs_dir,
                     read_json, save_state, write_json)
@@ -43,22 +44,18 @@ __all__ = ["run", "Launcher", "Transport", "ManifestError", "load_manifest", "ma
 AUTH_TYPES = ("api-key", "login", "adc")
 AUTH_CHOICES = ("auto",) + AUTH_TYPES
 AUTH_OF_KIND = {"api_key": "api-key", "codex_chatgpt": "login", "grok_cli": "login", "gcloud_adc": "adc"}
-MODES = ("gateway", "direct")
+MODES = ("gateway",)
 TRANSPORT_KEYS = ("id", "preset", "auth", "env", "op_ref", "default_model", "background_model", "base_url",
-                  "models", "options", "setup", "list_url", "model_env", "env_extra")
+                  "models", "options", "setup", "list_url", "env_extra")
 USER_KEYS = ("base_url", "env", "env_var", "op_ref", "models", "default_model", "background_model", "options",
-             "model_env", "list_url")
-# direct-mode model variables (launchkit.MODEL_ENV_KEYS values)
-MODEL_ENV_RE = re.compile(r"^(ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_(OPUS|SONNET|FABLE|HAIKU)_MODEL|"
-                          r"CLAUDE_CODE_SUBAGENT_MODEL)$")
-FORBIDDEN_EXTRA_RE = re.compile(r"^(ANTHROPIC_(BASE_URL|AUTH_TOKEN|API_KEY)|.*(SECRET|PASSWORD).*)$")
+             "list_url")
+# env_extra: non-secret Claude Code settings only (never auth/provider selection variables)
+EXTRA_ENV_RE = re.compile(r"^CLAUDE_CODE_(?!USE_|OAUTH)[A-Z0-9_]+$")
 SENSITIVE_ENV_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)", re.I)
 TESTED_CLAUDE = re.compile(r"^2\.1\.")
 MODELS_CACHE_TTL = 6 * 3600
 DISCOVERY_TIMEOUT = 3.0
 LIVE_TIMEOUT = 180.0
-DIRECT_ROLE_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_FABLE_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
 # (keep regex, drop regex) for ids returned by provider list endpoints (chat-capable models only)
 DISCOVERY_FILTERS = {
     "openai": (r"^(gpt-|o\d|codex)", r"(audio|realtime|tts|transcribe|image|search|embedding|moderation|instruct)"),
@@ -142,35 +139,20 @@ def manifest_problems(m):
             for k in ("env", "op_ref"):
                 if t.get(k):
                     out.append("%s: %s only applies to api-key transports" % (where, k))
-        base = t.get("base_url")
-        if base is not None and not re.match(r"^https?://[^\s/]+", str(base)):
-            out.append("%s: base_url must be http(s)://… (got %r)" % (where, base))
-        if mode == "gateway":
-            if not (t.get("default_model") or preset.get("default_model")):
-                out.append("%s: default_model required" % where)
-            for k in ("model_env", "env_extra", "list_url"):
-                if k in t:
-                    out.append("%s: %s only applies to direct mode" % (where, k))
-        elif mode == "direct":
-            model_env = t.get("model_env")
-            if not isinstance(model_env, dict) or not model_env.get("ANTHROPIC_MODEL"):
-                out.append("%s: model_env with ANTHROPIC_MODEL required in direct mode" % where)
-            else:
-                out.extend("%s: model_env key %r is not a model variable" % (where, k)
-                           for k in model_env if not MODEL_ENV_RE.match(k))
-                out.extend("%s: model_env[%r] must be a non-empty string" % (where, k)
-                           for k, v in model_env.items() if not isinstance(v, str) or not v)
-            extra = t.get("env_extra") or {}
-            if not isinstance(extra, dict):
-                out.append("%s: env_extra must be an object" % where)
-            else:
-                out.extend("%s: env_extra may not set %r" % (where, k) for k in extra if FORBIDDEN_EXTRA_RE.match(k))
-                out.extend("%s: env_extra[%r] must be a string" % (where, k)
-                           for k, v in extra.items() if not isinstance(v, str))
-            if (preset.get("auth") or {}).get("kind") != "api_key":
-                out.append("%s: direct mode needs an api-key transport" % where)
-    if mode == "direct" and len(transports) != 1:
-        out.append("direct mode takes exactly one transport")
+        for k in ("base_url", "list_url"):
+            if t.get(k) is not None and not re.match(r"^https?://[^\s/]+", str(t[k])):
+                out.append("%s: %s must be http(s)://… (got %r)" % (where, k, t[k]))
+        if not (t.get("default_model") or preset.get("default_model")):
+            out.append("%s: default_model required" % where)
+        extra = t.get("env_extra", {})
+        if not isinstance(extra, dict):
+            out.append("%s: env_extra must be an object" % where)
+            extra = {}
+        for k, v in extra.items():
+            if not EXTRA_ENV_RE.match(k) or SENSITIVE_ENV_RE.search(k):
+                out.append("%s: env_extra may only set non-secret CLAUDE_CODE_* settings (got %r)" % (where, k))
+            if not isinstance(v, str):
+                out.append("%s: env_extra[%r] must be a string" % (where, k))
     return out
 
 
@@ -202,7 +184,7 @@ class Transport(object):
             user.setdefault("env", user.pop("env_var"))
         if isinstance(user.get("env"), str):
             user["env"] = [user["env"]]
-        for k, kind in (("env", list), ("options", dict), ("model_env", dict)):
+        for k, kind in (("env", list), ("options", dict)):
             if k in user and not isinstance(user[k], kind):
                 self.warnings.append("ignoring providers.%s.%s: expected a JSON %s" % (
                     self.id, k, "list" if kind is list else "object"))
@@ -225,18 +207,6 @@ class Transport(object):
         self.setup = data.get("setup") or ""
         self.list_url = merged.get("list_url") or ""
         self.env_extra = dict(data.get("env_extra") or {})
-        self.model_env = dict(data.get("model_env") or {})
-        if self.model_env:
-            if isinstance(user.get("model_env"), dict):
-                self.model_env.update({k: v for k, v in user["model_env"].items() if MODEL_ENV_RE.match(k) and v})
-            if isinstance(models, dict):
-                self.model_env.update({k: v for k, v in models.items() if MODEL_ENV_RE.match(k) and v})
-            if user.get("default_model"):
-                for k in DIRECT_ROLE_KEYS:
-                    if k in self.model_env or k == "ANTHROPIC_MODEL":
-                        self.model_env[k] = user["default_model"]
-            if user.get("background_model"):
-                self.model_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = user["background_model"]
         # runtime (filled by Launcher.resolve)
         self.available = False
         self.source = None
@@ -470,32 +440,6 @@ class Launcher(object):
         spec = table.providers[pid].model_spec(model)
         return pid, spec, table.picker_id(pid, spec)
 
-    # ---- direct mode ------------------------------------------------------------------------
-    def direct_base_url(self, t):
-        base = (t.base_url or presets.PRESETS[t.preset].get("base_url") or "").rstrip("/")
-        return (self.environ.get(gwconfig.upstream_env_name(t.id)) or base).rstrip("/")
-
-    def direct_models(self, t, model=None):
-        """Model env (``ANTHROPIC_MODEL`` … names) for a direct launch, with ``--model`` applied."""
-        env = dict(t.model_env)
-        if model:
-            mid = model
-            spec = catalog.find_model(presets.PRESETS[t.preset].get("catalog"), model)
-            if spec is not None and (spec.context or 0) >= 1000000 and not mid.endswith("[1m]"):
-                mid += "[1m]"
-            for k in DIRECT_ROLE_KEYS:
-                if k in env:
-                    env[k] = mid
-        return env
-
-    def direct_env(self, t, store, token, model=None):
-        from .gateway import launchkit
-
-        model_env = self.direct_models(t, model)
-        roles = {role: model_env[name] for role, name in launchkit.MODEL_ENV_KEYS.items() if model_env.get(name)}
-        return launchkit.build_direct_env(self._base_env(), self.direct_base_url(t), token, roles,
-                                          dict(t.env_extra), secret_values=store)
-
     # ---- launch ---------------------------------------------------------------------------
     def _find_claude(self):
         from .gateway import launchkit
@@ -525,18 +469,17 @@ class Launcher(object):
                 raise LaunchError("%s: %s" % (self.name, why), 2)
             _err("%s: warning: %s" % (self.name, why))
         argv = (prefix or ["<claude not found>"]) + list(passthrough)
-        if self.mode == "direct":
-            return self._launch_direct(opts, selected[0], store, argv)
         table = self.route_table(selected, opts.model)
         port = self._gateway_port(opts.port)
         pid, spec, default_id = self.default_route(table)
         background_id = table.picker_prefix + "background"
+        via = next(t for t in selected if t.id == pid)
         if opts.dry_run:
             from .gateway import launchkit
 
             env = launchkit.build_child_env(self._base_env(), "http://127.0.0.1:%s" % (port or "<port>"),
                                             "<per-launch random token>", default_id, background_id, spec.context,
-                                            secret_values=store)
+                                            extra=via.env_extra, secret_values=store)
             self._print_plan(selected, store, env, argv, table, opts.debug)
             return 0
         self._tos_notice(selected)
@@ -553,8 +496,7 @@ class Launcher(object):
                 self.name, port, exc, " (port busy? use --port 0)" if port else ""), 3)
         try:
             env = launchkit.build_child_env(self._base_env(), gw.url, gw.token, default_id, background_id,
-                                            spec.context, secret_values=store)
-            via = next(t for t in selected if t.id == pid)
+                                            spec.context, extra=via.env_extra, secret_values=store)
             _err("%s: Claude Code -> %s via %s [%s] · gateway %s%s" % (
                 self.name, default_id, via.id, key_manager.display_source(via.source), gw.url,
                 " · log %s" % log_file if log_file else ""))
@@ -564,26 +506,6 @@ class Launcher(object):
             return self._run(launchkit, argv, env)
         finally:
             gw.stop()
-
-    def _launch_direct(self, opts, t, store, argv):
-        if opts.port is not None:
-            _err("%s: --port ignored (direct mode has no gateway)" % self.name)
-        if opts.model and "," in opts.model:
-            raise LaunchError("%s: --model takes a bare %s model id in direct mode (got %r)" % (
-                self.name, t.id, opts.model))
-        token = store.get(t.secret_name) or "<key from %s>" % t.source
-        env = self.direct_env(t, store, token, opts.model)
-        if opts.dry_run:
-            self._print_plan([t], store, env, argv, None, opts.debug)
-            return 0
-        from .gateway import launchkit
-
-        _err("%s: Claude Code -> %s at %s [%s] · direct (no gateway)" % (
-            self.name, env.get("ANTHROPIC_MODEL"), self.direct_base_url(t), key_manager.display_source(t.source)))
-        if opts.debug:
-            self._print_env_diff(env, store, {})
-            _err("argv: %s" % store.redact(_quote_argv(argv)))
-        return self._run(launchkit, argv, env)
 
     def _run(self, launchkit, argv, env):
         try:
@@ -756,17 +678,13 @@ class Launcher(object):
                      "source": key_manager.display_source(t.source) if t in selected else None,
                      "reason": None if t in selected else t.unavailable_text(self.name),
                      "models": []}
-            if self.mode == "direct":
-                entry["base_url"] = self.direct_base_url(t)
-                entry["model_env"] = dict(t.model_env)
-            else:
-                entry["default_model"], entry["background_model"] = t.default_model, t.background_model
+            entry["default_model"], entry["background_model"] = t.default_model, t.background_model
             listed = [(m, "catalog" if t.models is None else "config") for m in spec.models]
             listed += [(gwconfig.ModelSpec(id=i), "discovered") for i in cached if not spec.lists_model(i)]
             for m, origin in listed:
                 entry["models"].append({
                     "id": m.id, "context": m.context, "source": origin,
-                    "picker_id": table.picker_id(t.id, m) if self.mode == "gateway" else None})
+                    "picker_id": table.picker_id(t.id, m)})
             report.append(entry)
         return report
 
@@ -778,23 +696,15 @@ class Launcher(object):
             _say(json.dumps({"launcher": self.name, "version": self.version, "mode": self.mode,
                              "transports": report, "discovery_errors": errors}, indent=2))
             return 0
-        if self.mode == "gateway":
-            _say("%s models — pick in Claude Code with /model <picker id> (or `launch claude --model <id>`)"
-                 % self.name)
-        else:
-            _say("%s models — direct mode: Claude Code uses these ids as-is" % self.name)
+        _say("%s models — pick in Claude Code with /model <picker id> (or `launch claude --model <id>`)" % self.name)
         for e in report:
             state = "available via %s" % e["source"] if e["available"] else "unavailable — %s" % e["reason"]
             _say("\n%s · %s · %s · %s" % (e["id"], e["display_name"], e["auth"], store.redact(state)))
-            if self.mode == "direct":
-                _say("  endpoint %s" % e["base_url"])
-                for k, v in sorted(e["model_env"].items()):
-                    _say("  %-32s %s" % (k, v))
             for m in e["models"]:
                 mark = ("default" if m["id"] == e.get("default_model") else
                         "background" if m["id"] == e.get("background_model") else "")
                 origin = "" if m["source"] == "catalog" else " (%s)" % m["source"]
-                _say("  %-10s %-36s %-50s %s%s" % (mark, m["id"], m["picker_id"] or "", _fmt_ctx(m["context"]), origin))
+                _say("  %-10s %-36s %-50s %s%s" % (mark, m["id"], m["picker_id"], _fmt_ctx(m["context"]), origin))
             if e["id"] in errors:
                 _say("  (discovery failed: %s)" % errors[e["id"]])
         return 0
@@ -885,9 +795,6 @@ class Launcher(object):
                 line("warn", "%s: unavailable — %s" % (t.label(), t.unavailable_text(self.name)))
             if t.auth == "adc" and t in selected:
                 self._doctor_adc(t, line)
-            if self.mode == "direct" and t in selected:
-                line("ok", "%s: endpoint %s, model %s" % (t.id, self.direct_base_url(t),
-                                                         t.model_env.get("ANTHROPIC_MODEL")))
         if not selected:
             line("FAIL", "no usable transport")
         for text in gwconfig.describe_upstream_env_overrides(
@@ -933,12 +840,6 @@ class Launcher(object):
 
     def _doctor_live(self, selected, store, model):
         _say("Live check (tool-call round trip; each route makes 2 tiny PAID requests):")
-        if self.mode == "direct":
-            t = selected[0]
-            mid = compat.removesuffix(self.direct_models(t, model)["ANTHROPIC_MODEL"], "[1m]")
-            headers = {"Authorization": "Bearer %s" % store.get(t.secret_name)}
-            routes = [(mid, self.direct_base_url(t) + "/v1/messages", headers, mid)]
-            return self._live_routes(routes, store)
         from .gateway.server import Gateway
 
         table = self.route_table(selected, model)
@@ -950,15 +851,15 @@ class Launcher(object):
         gw = Gateway(table, store, port=0, log=log, launcher_name=self.name).start()
         try:
             headers = {"Authorization": "Bearer %s" % gw.token}
-            return self._live_routes([(r, gw.url + "/v1/messages", headers, r) for r in routes], store)
+            return self._live_routes(routes, gw.url + "/v1/messages", headers, store)
         finally:
             gw.stop()
 
-    def _live_routes(self, routes, store):
+    def _live_routes(self, routes, url, headers, store):
         failures = []
-        for label, url, headers, model in routes:
+        for label in routes:
             try:
-                info = live_round_trip(url, headers, model, self.environ)
+                info = live_round_trip(url, headers, label, self.environ)
             except LaunchError as exc:
                 msg = store.redact(str(exc))
                 _say("  [FAIL] %s — %s" % (label, msg))
@@ -983,8 +884,7 @@ class Launcher(object):
             "  %s doctor [--live] [--model M] [--auth A]" % self.name,
             "  %s --version | --help" % self.name,
             "",
-            "Mode: %s%s" % (self.mode, " (in-process gateway)" if self.mode == "gateway" else
-                            " (official Anthropic-compatible endpoint, no gateway)"),
+            "Claude Code talks to an in-process gateway that holds the provider credentials.",
             "Transports (tried in order; --auth filters):",
         ]
         for t in self.transports:

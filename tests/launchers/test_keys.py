@@ -8,7 +8,8 @@ import stat
 import unittest
 from unittest import mock
 
-from ._util import SENTINEL, LauncherTestCase, fake_key, key_manager
+from ._util import SENTINEL, LauncherTestCase, fake_key
+from shared import key_manager
 
 
 class KeysTests(LauncherTestCase):

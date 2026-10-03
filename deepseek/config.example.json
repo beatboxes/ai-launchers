@@ -1,8 +1,8 @@
 {
   "name": "deepseek-wrap",
   "version": "0.2.0",
-  "description": "DeepSeek via its official Anthropic-compatible endpoint (direct, no gateway)",
-  "mode": "direct",
+  "description": "DeepSeek models as the brain of Claude Code (official Anthropic-compatible endpoint, via the gateway)",
+  "mode": "gateway",
   "transports": [
     {
       "id": "deepseek",
@@ -10,18 +10,11 @@
       "auth": "api-key",
       "env": ["DEEPSEEK_API_KEY"],
       "op_ref": "",
-      "base_url": "https://api.deepseek.com/anthropic",
+      "default_model": "deepseek-v4-pro",
+      "background_model": "deepseek-v4-flash",
       "list_url": "https://api.deepseek.com/models",
-      "model_env": {
-        "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
-        "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-v4-pro[1m]",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash[1m]"
-      },
       "env_extra": {
-        "CLAUDE_CODE_EFFORT_LEVEL": "max",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+        "CLAUDE_CODE_EFFORT_LEVEL": "max"
       }
     }
   ]
