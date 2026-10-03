@@ -513,13 +513,35 @@ class StreamParserTests(unittest.TestCase):
         self.assertIsNone(self.lru.get("fc-9"))
         self.assertEqual(sigs.decode_signature(out[3].signature), ("gemini_api", {"s": "SIG1"}))
 
-    def test_signature_on_text_and_trailing_empty_part(self):
-        out = self.parse([_cand([{"text": "Hel"}]), _cand([{"text": "lo", "thoughtSignature": "T1"}]),
-                          _cand([{"text": "", "thoughtSignature": "T2"}], "STOP")], target="vertex")
-        self.assertEqual(out, [ev.TextDelta(1, "Hel"), ev.ThinkingDelta(2, ""),
-                               ev.ThinkingSignature(2, gsig("T1", "vertex")), ev.TextDelta(3, "lo"),
-                               ev.ThinkingDelta(4, ""), ev.ThinkingSignature(4, gsig("T2", "vertex")),
+    def test_signature_on_later_text_part_never_splits_the_answer(self):
+        # regression (real Claude Code E2E): [text "DONE 9"][thinking ""][text "29bd7b0"] -> -p printed the tail only
+        out = self.parse([_cand([{"text": "DONE 9"}]), _cand([{"text": "29bd", "thoughtSignature": "T1"}]),
+                          _cand([{"text": "7b0"}]), _cand([{"text": "", "thoughtSignature": "T2"}], "STOP")],
+                         target="vertex")
+        self.assertEqual(out, [ev.TextDelta(1, "DONE 9"), ev.TextDelta(1, "29bd"), ev.TextDelta(1, "7b0"),
                                ev.Finish("end_turn")])
+        self.assertEqual(len(self.lru), 0)
+        reply = assistant_from_events(out)
+        self.assertEqual([(b.type, b.text) for b in reply.blocks], [("text", "DONE 929bd7b0")])
+
+    def test_signature_on_first_text_part_opens_thinking_first(self):
+        out = self.parse([_cand([{"text": "Hel", "thoughtSignature": "T1"}]), _cand([{"text": "lo"}], "STOP")])
+        self.assertEqual(out, [ev.ThinkingDelta(1, ""), ev.ThinkingSignature(1, gsig("T1")),
+                               ev.TextDelta(2, "Hel"), ev.TextDelta(2, "lo"), ev.Finish("end_turn")])
+        out = self.parse([_cand([{"text": "plan", "thought": True}]),
+                          _cand([{"text": "Hi", "thoughtSignature": "T2"}], "STOP")])
+        self.assertEqual(out, [ev.ThinkingDelta(1, "plan"), ev.ThinkingDelta(2, ""),
+                               ev.ThinkingSignature(2, gsig("T2")), ev.TextDelta(3, "Hi"), ev.Finish("end_turn")])
+
+    def test_text_then_signed_function_call(self):
+        out = self.parse([_cand([{"text": "Let me "}]), _cand([{"text": "check."}]),
+                          _cand([{"functionCall": {"name": "Bash", "args": {"command": "ls"}},
+                                  "thoughtSignature": "S1"}], "STOP")])
+        tool_id = out[-2].id
+        self.assertEqual(out, [ev.TextDelta(1, "Let me "), ev.TextDelta(1, "check."), ev.ThinkingDelta(2, ""),
+                               ev.ThinkingSignature(2, gsig("S1")), ev.ToolCall(tool_id, "Bash", '{"command":"ls"}'),
+                               ev.Finish("tool_use")])
+        self.assertEqual(self.lru.get(tool_id), "S1")
 
     def test_finish_reasons(self):
         def finish(reason, parts=None):
@@ -619,6 +641,7 @@ class ExecuteTests(_MockCase):
         events2 = self.run_turn(make_ctx(make_req(hist, tools=[BASH, READ]), prov, model_id, auth, runtime))
         text = "".join(e.text for e in events2 if isinstance(e, ev.TextDelta))
         self.assertEqual(text, "DONE %s" % mocks.sha8("hello"))
+        self.assertEqual(len({e.key for e in events2 if isinstance(e, ev.TextDelta)}), 1)  # one text block
         self.assertEqual(events2[-1], ev.Finish("end_turn"))
         req2 = srv.requests[-1]["body_json"]
         self.assertNotIn(srv.brain.thinking, json.dumps(req2))

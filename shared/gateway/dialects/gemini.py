@@ -22,9 +22,10 @@ Request translation (``GeminiDialect.build_body``):
   once pre-commit with dummy signatures only, sticky for that session id.
 
 Stream translation (``GeminiStreamParser``): thought text -> ThinkingDelta, text -> TextDelta,
-functionCall -> ToolCall; a part carrying ``thoughtSignature`` is preceded by an empty thinking
-block holding ``ThinkingSignature(fgw1.<target>.{"s": sig})``; finishReason / usageMetadata ->
-Finish / Usage.
+functionCall -> ToolCall; a functionCall part carrying ``thoughtSignature`` (or any signed part
+before the first answer text) is preceded by an empty thinking block holding
+``ThinkingSignature(fgw1.<target>.{"s": sig})``; signatures on later text parts are dropped so the
+answer text stays one block; finishReason / usageMetadata -> Finish / Usage.
 """
 
 import json
@@ -431,6 +432,7 @@ class GeminiStreamParser(object):
         self._cur = None
         self.chunks = 0
         self.tool_calls = 0
+        self.text_emitted = False
         self.content_seen = False
         self.malformed = False
         self.finish_reason = None
@@ -482,12 +484,17 @@ class GeminiStreamParser(object):
         return out
 
     def _part(self, part):
+        """Events for one part. A ``thoughtSignature`` becomes an empty signed thinking block emitted
+        BEFORE the part — always for a functionCall (also remembered in the LRU), for other parts
+        only while no answer text has been emitted in this message: a thinking block must never split
+        the answer text (Gemini 3 signs the LAST text part; text-only signatures are not validated)."""
         if not isinstance(part, dict):
             return []
         out = []
         sig = part.get("thoughtSignature")
         sig = sig if isinstance(sig, str) and sig else None
-        if sig:
+        call = part.get("functionCall")
+        if sig and (isinstance(call, dict) or not self.text_emitted):
             key = self._new_block("signature")
             out.append(ThinkingDelta(key, ""))
             out.append(ThinkingSignature(key, encode_signature(self.target, {"s": sig})))
@@ -497,8 +504,8 @@ class GeminiStreamParser(object):
             if part.get("thought"):
                 out.append(ThinkingDelta(self._block("thinking"), text))
             else:
+                self.text_emitted = True
                 out.append(TextDelta(self._block("text"), text))
-        call = part.get("functionCall")
         if isinstance(call, dict):
             self.content_seen = True
             name = call.get("name")
