@@ -1,0 +1,11 @@
+{
+ "method": "GET",
+ "path": "/v1/models?limit=1000",
+ "headers": {
+  "Accept": "*/*",
+  "User-Agent": "claude-code/2.1.288",
+  "anthropic-version": "2023-06-01",
+  "Accept-Encoding": "gzip, deflate, br, zstd"
+ },
+ "body": null
+}
